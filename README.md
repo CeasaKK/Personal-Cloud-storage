@@ -67,7 +67,7 @@ the systemd unit, and Tailscale. The iOS app is covered in **[ios/README.md](ios
 ## Tests
 
 ```bash
-cd server && .venv/bin/python -m pytest -q            # 72 tests: codec, SIMD kernels, store, failure drills, API, disaster recovery
+cd server && .venv/bin/python -m pytest -q            # 81 tests: codec, SIMD kernels, store, failure drills, formats, API, disaster recovery
 cd ios/CloudSyncKit && swift test                      # Merkle vectors shared with the server, planner, tus
 cd server && .venv/bin/python -m benchmarks.run_all    # regenerates docs/benchmarks.md
 ```
