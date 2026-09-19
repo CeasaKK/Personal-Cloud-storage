@@ -227,6 +227,7 @@ class ObjectStore:
 
     def _write_stripe(self, object_id: int, seq: int, offset: int, data: bytes, k: int, m: int,
                       state_after: str = "committed") -> str:
+        key = self.db.scalar("SELECT key FROM objects WHERE id = ?", (object_id,))
         rs = self.codec(k, m)
         shard_size = rs.shard_size_for(len(data), self.config.max_shard_size)
         shards = rs.encode_bytes(data, shard_size)
@@ -245,7 +246,7 @@ class ObjectStore:
             if disk is None:
                 rows.append((stripe_id, i, None, csum, int(i >= k), "missing"))
                 continue
-            header = sf.ShardHeader(i, k, m, stripe_id, len(shard), csum)
+            header = sf.ShardHeader(i, k, m, stripe_id, len(shard), csum, seq, offset, len(data), key)
             try:
                 sf.write_shard(disk.path, header, shard, fsync=self.config.fsync)
                 rows.append((stripe_id, i, disk.id, csum, int(i >= k), "ok"))
@@ -455,7 +456,9 @@ class ObjectStore:
             if target is None:
                 log.warning("no writable disk available to repair %s.%d", st.id, idx)
                 continue
-            header = sf.ShardHeader(idx, st.k, st.m, st.id, len(payload), csum)
+            key = self.db.scalar("SELECT key FROM objects WHERE id = ?", (st.object_id,)) or ""
+            header = sf.ShardHeader(idx, st.k, st.m, st.id, len(payload), csum, st.seq, st.data_offset,
+                                    st.data_len, key)
             try:
                 sf.write_shard(target.path, header, payload, fsync=self.config.fsync)
             except sf.DiskIOError as e:
@@ -553,7 +556,7 @@ class ObjectStore:
         k, m = self.profile() if disks else (self.config.ec_k, self.config.ec_m)
         stored = int(self.db.scalar("SELECT COALESCE(SUM(size),0) FROM objects WHERE state = 'committed'"))
         on_disk = int(self.db.scalar(
-            "SELECT COALESCE(SUM(t.shard_size + 64),0) FROM shards s JOIN stripes t ON t.id = s.stripe_id "
+            "SELECT COALESCE(SUM(t.shard_size + 256),0) FROM shards s JOIN stripes t ON t.id = s.stripe_id "
             "WHERE s.state = 'ok'"))
         return {
             "profile": {"k": k, "m": m, "mode": "mirror" if k == 1 else "erasure"},

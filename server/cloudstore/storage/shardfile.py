@@ -1,7 +1,15 @@
 """Self-describing shard files (TDD §4.6) with atomic writes (TDD §4.7).
 
-Layout: 64-byte header (magic, version, index, k, m, stripe uuid, payload
-length, BLAKE2b-256 of payload) followed by the payload.
+Layout: 256-byte header followed by the payload. The header carries enough to
+rebuild the object/stripe/shard index from the disks alone (``recovery.py``):
+
+    0   4  magic "CSHD"          24  8  payload length
+    4   1  version               32 32  BLAKE2b-256 of payload
+    5   1  shard index           64  4  stripe seq within object
+    6   1  k                     68  8  stripe data offset in object
+    7   1  m                     76  8  stripe data length
+    8  16  stripe uuid           84  2  object key length, 86.. key (<=166 B)
+                                252  4  CRC32 of header bytes 0..251
 """
 
 from __future__ import annotations
@@ -10,14 +18,15 @@ import hashlib
 import os
 import struct
 import uuid
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
 MAGIC = b"CSHD"
 VERSION = 1
-HEADER = struct.Struct("<4sBBBB16sQ32s")
-HEADER_SIZE = HEADER.size  # 64
-assert HEADER_SIZE == 64
+HEADER = struct.Struct("<4sBBBB16sQ32sIQQH")
+HEADER_SIZE = 256
+MAX_KEY = HEADER_SIZE - HEADER.size - 4
 
 
 class ShardError(Exception):
@@ -44,6 +53,10 @@ class ShardHeader:
     stripe_id: str
     length: int
     checksum: bytes
+    seq: int = 0
+    data_offset: int = 0
+    data_len: int = 0
+    key: str = ""
 
 
 def checksum(payload) -> bytes:
@@ -55,16 +68,32 @@ def shard_relpath(stripe_id: str, index: int) -> str:
 
 
 def pack_header(h: ShardHeader) -> bytes:
-    return HEADER.pack(MAGIC, VERSION, h.index, h.k, h.m, uuid.UUID(h.stripe_id).bytes, h.length, h.checksum)
+    key = h.key.encode()
+    if len(key) > MAX_KEY:
+        raise ValueError("object key too long for shard header")
+    body = HEADER.pack(MAGIC, VERSION, h.index, h.k, h.m, uuid.UUID(h.stripe_id).bytes, h.length, h.checksum,
+                       h.seq, h.data_offset, h.data_len, len(key)) + key
+    body = body.ljust(HEADER_SIZE - 4, b"\0")
+    return body + struct.pack("<I", zlib.crc32(body))
 
 
 def unpack_header(raw: bytes) -> ShardHeader:
     if len(raw) < HEADER_SIZE:
         raise CorruptShard("truncated header")
-    magic, version, index, k, m, sid, length, csum = HEADER.unpack(raw[:HEADER_SIZE])
+    body = raw[: HEADER_SIZE - 4]
+    (crc,) = struct.unpack("<I", raw[HEADER_SIZE - 4 : HEADER_SIZE])
+    if zlib.crc32(body) != crc:
+        raise CorruptShard("header CRC mismatch")
+    magic, version, index, k, m, sid, length, csum, seq, off, dlen, klen = HEADER.unpack(body[: HEADER.size])
     if magic != MAGIC or version != VERSION:
         raise CorruptShard("bad magic/version")
-    return ShardHeader(index, k, m, uuid.UUID(bytes=sid).hex, length, csum)
+    key = body[HEADER.size : HEADER.size + klen].decode()
+    return ShardHeader(index, k, m, uuid.UUID(bytes=sid).hex, length, csum, seq, off, dlen, key)
+
+
+def read_header(path: Path) -> ShardHeader:
+    with open(path, "rb") as f:
+        return unpack_header(f.read(HEADER_SIZE))
 
 
 def _fsync_dir(path: Path) -> None:

@@ -146,7 +146,7 @@ def test_crash_recovery_drops_pending(env):
     env.db.execute("INSERT INTO stripes(id,object_id,seq,k,m,shard_size,data_offset,data_len,state,created_at) "
                    "VALUES('00112233445566778899aabbccddeeff',?,0,4,2,64,0,10,'pending',0)", (oid,))
     d = env.disk_list[0]
-    hdr = sf.ShardHeader(0, 4, 2, "00112233445566778899aabbccddeeff", 3, sf.checksum(b"abc"))
+    hdr = sf.ShardHeader(0, 4, 2, "00112233445566778899aabbccddeeff", 3, sf.checksum(b"abc"), key="p")
     sf.write_shard(d.path, hdr, b"abc", fsync=False)
     assert env.store.recover_pending() == 2
     assert not (d.path / sf.shard_relpath("00112233445566778899aabbccddeeff", 0)).exists()
@@ -157,3 +157,28 @@ def test_capacity_report(env):
     cap = env.store.capacity()
     assert cap["profile"] == {"k": 4, "m": 2, "mode": "erasure"}
     assert cap["usable_bytes"] == int(cap["raw_bytes"] * 4 / 6)
+
+
+def test_recover_index_from_disks(tmp_path):
+    from cloudstore.db.database import Database
+    from cloudstore.storage.disks import DiskManager
+    from cloudstore.storage.objectstore import ObjectStore
+    from cloudstore.storage.recovery import recover_index
+
+    e = Env(tmp_path)
+    blobs = {f"media/{i}": os.urandom(120_000 + i) for i in range(3)}
+    for k, v in blobs.items():
+        e.store.put_bytes(k, v)
+    # lose the metadata database entirely, keep disks
+    e.db.close()
+    for f in e.config.data_dir.glob("meta.sqlite3*"):
+        f.unlink()
+    db = Database(e.config.db_path)
+    dm = DiskManager(db)
+    for d in e.disk_list:
+        dm.add(d.path)
+    report = recover_index(db, dm)
+    assert report["objects_added"] == 3
+    store = ObjectStore(db, dm, e.config)
+    for k, v in blobs.items():
+        assert store.get(k) == v

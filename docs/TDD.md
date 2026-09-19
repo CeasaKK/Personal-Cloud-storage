@@ -104,10 +104,11 @@ via `CLOUDSTORE_GF_BACKEND`.
 ### 4.5 Stripe layout
 Objects are split into **per-object stripes** (no cross-object packing):
 `shard_size = min(ceil(remaining / k) rounded up to 64 B, max_shard_size)`,
-default `max_shard_size = 16 MiB` (64 MiB stripe of data for 4+2).
+default `max_shard_size = 4 MiB` (16 MiB of data per 4+2 stripe).
 * A 3 MB photo → one stripe of 6 shards ≈ 768 KB each.
-* A 2 GB video → 32 stripes; a byte-range read touches only the stripes it overlaps,
-  so video seeking during degraded mode decodes only what is needed.
+* A 2 GB video → 128 stripes; a byte-range read touches only the stripes it overlaps,
+  so video seeking during degraded mode decodes only what is needed. A 128 MiB LRU
+  of decoded stripes serves the sequential range requests of video playback.
 * Rationale (resolves the packing gap): phones produce objects ≥ 100 KB almost
   exclusively, so per-object stripes waste < 1 % to padding, while making delete
   trivial (drop the stripes — no compaction, no stripe-level GC). The only
@@ -115,23 +116,24 @@ default `max_shard_size = 16 MiB` (64 MiB stripe of data for 4+2).
   At 100 k photos, 4+2 is ≈100 k shard files per disk — comfortable for ext4/XFS.
 
 ### 4.6 Shard file format (self-describing)
+256-byte header, then the payload:
 ```
-offset size field
-0      4    magic "CSHD"
-4      1    version (1)
-5      1    shard index
-6      1    k
-7      1    m
-8      16   stripe id (UUID bytes)
+offset size field                     offset size field
+0      4    magic "CSHD"              64     4    stripe seq within object
+4      1    version (1)               68     8    stripe data offset in object
+5      1    shard index               76     8    stripe data length
+6      1    k                         84     2    object key length
+7      1    m                         86     ≤166 object key (e.g. media/<sha256>)
+8      16   stripe id (UUID bytes)    252    4    CRC32 of header bytes 0..251
 24     8    payload length (LE)
 32     32   BLAKE2b-256 of payload
-64     …    payload
 ```
 Path: `<disk>/shards/<id[0:2]>/<id[2:4]>/<stripe-id>.<index>.shd`.
-BLAKE2b-256 (stdlib, faster than SHA-256 in software) is the checksum; it is
+BLAKE2b-256 (stdlib, faster than SHA-256 in software) is the payload checksum; it is
 stored both in the header and in the `shards` table. Because shards are
-self-describing, `cloudstore recover-index` can rebuild stripe/shard metadata by
-scanning disks if the SQLite file is ever lost.
+self-describing, `cloudstore recover-index` rebuilds the objects/stripes/shards
+tables by scanning the disks if the SQLite file is ever lost, and `--reingest`
+re-derives file metadata (EXIF, thumbnails, hashes) from the recovered originals.
 
 ### 4.7 Write protocol (atomicity — resolves the "disk dies mid-write" concern)
 1. Insert stripe row `state='pending'` (the journal entry), commit.
