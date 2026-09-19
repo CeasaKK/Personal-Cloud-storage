@@ -1,0 +1,79 @@
+# XcodeGen spec — generate the Xcode project with:
+#   brew install xcodegen && cd ios/CloudstoreApp && xcodegen
+# then open Cloudstore.xcodeproj, set your Team under Signing, and run.
+name: Cloudstore
+options:
+  bundleIdPrefix: app.cloudstore
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    DEVELOPMENT_TEAM: ""   # set yours
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+packages:
+  CloudSyncKit:
+    path: ../CloudSyncKit
+targets:
+  Cloudstore:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources/App
+    dependencies:
+      - package: CloudSyncKit
+      - target: CloudstoreShare
+        embed: true
+    info:
+      path: Sources/App/Info.plist
+      properties:
+        CFBundleDisplayName: Cloudstore
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSPhotoLibraryUsageDescription: Cloudstore backs up your photos and videos to your own server.
+        UIBackgroundModes: [fetch, processing]
+        BGTaskSchedulerPermittedIdentifiers: [app.cloudstore.refresh, app.cloudstore.backup]
+        KeychainAccessGroup: $(AppIdentifierPrefix)app.cloudstore.shared
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    entitlements:
+      path: Sources/App/Cloudstore.entitlements
+      properties:
+        com.apple.security.application-groups: [group.app.cloudstore]
+        keychain-access-groups: [$(AppIdentifierPrefix)app.cloudstore.shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.cloudstore.ios
+        INFOPLIST_KEY_CFBundleDisplayName: Cloudstore
+  CloudstoreShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Sources/ShareExtension
+      - path: Sources/App/AppSettings.swift
+    dependencies:
+      - package: CloudSyncKit
+    info:
+      path: Sources/ShareExtension/Info.plist
+      properties:
+        CFBundleDisplayName: Cloudstore
+        KeychainAccessGroup: $(AppIdentifierPrefix)app.cloudstore.shared
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsImageWithMaxCount: 50
+              NSExtensionActivationSupportsMovieWithMaxCount: 20
+              NSExtensionActivationSupportsFileWithMaxCount: 20
+    entitlements:
+      path: Sources/ShareExtension/CloudstoreShare.entitlements
+      properties:
+        com.apple.security.application-groups: [group.app.cloudstore]
+        keychain-access-groups: [$(AppIdentifierPrefix)app.cloudstore.shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.cloudstore.ios.share
