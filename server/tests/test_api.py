@@ -191,7 +191,10 @@ def test_near_duplicates_grouped(app_env):
 
 def test_nonmedia_tier_dedup_seal_and_read(app_env):
     client, svc, h, _ = app_env
-    doc = os.urandom(200_000) + b"shared tail " * 20_000
+    # high-entropy content with a fixed seed. (Periodic data such as b"ab" * N has no
+    # content-defined boundaries: CDC falls back to max-size cuts, which do shift on insert.)
+    import numpy as np
+    doc = np.random.default_rng(5).bytes(800_000)
     doc2 = doc[:150_000] + b"EDIT" + doc[150_000:]
     tus_upload(client, doc, "notes.txt", h)
     tus_upload(client, doc2, "notes-v2.txt", h)
