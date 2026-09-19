@@ -572,8 +572,10 @@ class ObjectStore:
     def stripe_health(self) -> dict:
         rows = self.db.all("SELECT state, COUNT(*) AS n FROM stripes GROUP BY state")
         out = {r["state"]: r["n"] for r in rows}
+        # degraded = any shard known-bad, unplaced, or sitting on a disk that is not readable
         out["with_bad_shards"] = int(self.db.scalar(
-            "SELECT COUNT(DISTINCT stripe_id) FROM shards WHERE state != 'ok'"))
+            "SELECT COUNT(DISTINCT s.stripe_id) FROM shards s LEFT JOIN disks d ON d.id = s.disk_id "
+            "WHERE s.state != 'ok' OR d.id IS NULL OR d.status NOT IN ('online', 'degraded', 'rebuilding')"))
         return out
 
 

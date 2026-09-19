@@ -19,3 +19,4 @@ ios/**/.build/
 ios/**/*.xcodeproj/
 ios/**/xcuserdata/
 .DS_Store
+demo/

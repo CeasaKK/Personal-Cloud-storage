@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "cloudstore-demo",
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": ["-c", "cd server && CLOUDSTORE_DATA_DIR=./demo/data .venv/bin/cloudstore serve --port 8000"],
+      "port": 8000
+    }
+  ]
+}
