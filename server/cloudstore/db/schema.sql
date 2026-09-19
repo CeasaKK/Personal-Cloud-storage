@@ -110,6 +110,7 @@ CREATE TABLE IF NOT EXISTS files (
     object_id    INTEGER REFERENCES objects(id),     -- media tier
     favorite     INTEGER NOT NULL DEFAULT 0,
     trashed_at   REAL,
+    purged_at    REAL,                               -- tombstone: bytes gone, hash remembered
     phash        INTEGER,
     dhash        INTEGER,
     sharpness    REAL,
@@ -130,10 +131,21 @@ CREATE TABLE IF NOT EXISTS batches (
     live_bytes       INTEGER NOT NULL DEFAULT 0,
     compressed_bytes INTEGER,
     frame_count      INTEGER,
+    dict_len         INTEGER,
     object_id        INTEGER REFERENCES objects(id),
     created_at       REAL NOT NULL,
     first_data_at    REAL,
     sealed_at        REAL
+);
+
+CREATE TABLE IF NOT EXISTS batch_frames (
+    batch_id    INTEGER NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+    idx         INTEGER NOT NULL,
+    raw_start   INTEGER NOT NULL,                    -- offset in the sealed raw layout
+    raw_len     INTEGER NOT NULL,
+    comp_offset INTEGER NOT NULL,                    -- offset in the batch object
+    comp_len    INTEGER NOT NULL,
+    PRIMARY KEY (batch_id, idx)
 );
 
 CREATE TABLE IF NOT EXISTS chunks (
