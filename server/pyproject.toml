@@ -1,0 +1,33 @@
+[project]
+name = "cloudstore"
+version = "1.0.0"
+description = "Self-hosted personal cloud storage with own-code Reed-Solomon durability"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+  "pyjwt>=2.8",
+  "pillow>=10.0",
+  "pillow-heif>=0.16",
+  "zstandard>=0.22",
+  "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[project.scripts]
+cloudstore = "cloudstore.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["cloudstore*"]
+
+[tool.setuptools.package-data]
+cloudstore = ["db/*.sql", "erasure/native/*.c"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
