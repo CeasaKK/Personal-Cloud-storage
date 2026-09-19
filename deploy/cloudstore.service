@@ -1,0 +1,33 @@
+[Unit]
+Description=Cloudstore personal cloud (erasure-coded photo backup)
+# the data disks are mounted with nofail; the health monitor handles a missing disk
+After=network-online.target local-fs.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cloudstore
+Group=cloudstore
+EnvironmentFile=/etc/cloudstore.env
+ExecStart=/opt/cloudstore/venv/bin/cloudstore serve --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+# graceful stop lets workers finish the current stripe write
+TimeoutStopSec=60
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+
+# hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/cloudstore /srv/cloud/disks
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

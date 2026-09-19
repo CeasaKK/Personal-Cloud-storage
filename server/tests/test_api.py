@@ -252,3 +252,52 @@ def test_timeline_pagination(app_env):
         if not cursor:
             break
     assert len(seen) == len(set(seen)) == 7
+
+
+def test_metadata_snapshot_survives_ssd_loss(tmp_path):
+    """Lose the whole SSD (DB + derived + staging); rebuild everything from the 6 disks."""
+    import shutil
+
+    from cloudstore.cli import main as cli
+    from cloudstore.storage.snapshots import take_snapshot
+
+    cfg = make_config(tmp_path, max_shard_size=64 * 1024)
+    svc = Services(cfg)
+    for i in range(6):
+        svc.disks.add(tmp_path / f"disk{i}", f"d{i}")
+    Auth(svc.db, cfg).set_password(PASSWORD)
+    app = create_app(cfg, svc)
+    with TestClient(app) as client:
+        h = {"Authorization": "Bearer " + client.post("/api/auth/login", json={"password": PASSWORD, "client": "ios"}).json()["access_token"]}
+        tus_upload(client, make_jpeg(300), "keep.jpg", h)
+        svc.ingest.run_pending()
+        fid = client.get("/api/timeline", headers=h).json()["items"][0]["id"]
+        aid = client.post("/api/albums", json={"name": "Survivors"}, headers=h).json()["id"]
+        client.post(f"/api/albums/{aid}/items", json={"ids": [fid]}, headers=h)
+        client.patch(f"/api/files/{fid}", json={"favorite": True}, headers=h)
+        take_snapshot(svc.db, svc.store)
+        # a photo added after the snapshot must also come back (via shard headers + reingest)
+        late = make_jpeg(301)
+        tus_upload(client, late, "late.jpg", h)
+        svc.ingest.run_pending()
+    svc.db.close()
+    shutil.rmtree(cfg.data_dir)  # the SSD is gone
+
+    import os
+    os.environ["CLOUDSTORE_DATA_DIR"] = str(cfg.data_dir)
+    os.environ["CLOUDSTORE_FSYNC"] = "0"
+    os.environ["CLOUDSTORE_MAX_SHARD_SIZE"] = str(64 * 1024)
+    try:
+        for i in range(6):
+            cli(["disk", "add", str(tmp_path / f"disk{i}")])
+        cli(["recover-index", "--restore-metadata", "--reingest"])
+        fresh = Services(make_config(tmp_path, max_shard_size=64 * 1024))
+        rows = {r["sha256"]: r for r in fresh.db.all("SELECT * FROM files")}
+        assert sha256(late) in rows  # re-derived from the disks
+        kept = fresh.db.one("SELECT * FROM files WHERE id = ?", (fid,))
+        assert kept["favorite"] == 1
+        assert fresh.db.scalar("SELECT name FROM albums WHERE id = ?", (aid,)) == "Survivors"
+        assert b"".join(fresh.files.iter_bytes(kept, 0, kept["size"]))[:3] == b"\xff\xd8\xff"
+    finally:
+        for k in ("CLOUDSTORE_DATA_DIR", "CLOUDSTORE_FSYNC", "CLOUDSTORE_MAX_SHARD_SIZE"):
+            os.environ.pop(k, None)

@@ -102,5 +102,14 @@ class Workers:
         self.svc.db.execute("DELETE FROM uploads WHERE completed_at IS NOT NULL AND completed_at < ?", (now - 86400,))
         self.svc.db.execute("DELETE FROM refresh_tokens WHERE expires_at < ?", (now,))
         self.svc.batches.save_bloom()
+        self._snapshot_if_due()
         if purged or expired:
             log.info("maintenance: purged %d trashed files, expired %d uploads", purged, len(expired))
+
+    def _snapshot_if_due(self) -> None:
+        from ..storage.snapshots import PREFIX, latest_snapshot, take_snapshot
+
+        latest = latest_snapshot(self.svc.db)
+        age = time.time() - int(latest[len(PREFIX):]) if latest else float("inf")
+        if age >= 86400 and self.svc.disks.writable():
+            take_snapshot(self.svc.db, self.svc.store)

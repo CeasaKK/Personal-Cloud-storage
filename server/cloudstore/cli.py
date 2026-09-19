@@ -6,7 +6,8 @@
     cloudstore scrub [--full]
     cloudstore rebuild           # run queued rebuild tasks in the foreground
     cloudstore restripe          # migrate mirror stripes to the k+m profile
-    cloudstore recover-index [--reingest]
+    cloudstore recover-index [--restore-metadata] [--reingest]
+    cloudstore snapshot          # metadata snapshot to the disks now (also runs daily)
     cloudstore seal              # seal open non-media batches now
     cloudstore status
 """
@@ -102,10 +103,29 @@ def cmd_restripe(args) -> None:
 
 
 def cmd_recover_index(args) -> None:
+    """Rebuild metadata from the disks (TDD §4.6, §14.1). After losing the SSD:
+    re-register the disks (`cloudstore disk add PATH` for each), then run
+    `cloudstore recover-index --restore-metadata --reingest`."""
+    from .services import Services
     from .storage.recovery import recover_index
+    from .storage.snapshots import latest_snapshot, restore_snapshot
 
     s = _svc()
     print(json.dumps(recover_index(s.db, s.disks), indent=2))
+    if args.restore_metadata:
+        key = latest_snapshot(s.db)
+        if key is None:
+            print("no metadata snapshot found on the disks; keeping the recovered object index only")
+        else:
+            paths = [d.path for d in s.disks.list() if d.status != "retired"]
+            n = restore_snapshot(s.store, key, s.config.db_path)
+            s.db.close()
+            print(f"restored {key} ({n} bytes)")
+            s = Services(Config())
+            for p in paths:  # refresh mount paths; registers disks added after the snapshot
+                s.disks.add(p)
+            s.disks.check_all()
+            print("objects written after the snapshot:", json.dumps(recover_index(s.db, s.disks)))
     if args.reingest:
         # media objects without a files row: re-derive metadata from the originals
         rows = s.db.all("SELECT key FROM objects WHERE key LIKE 'media/%' AND state = 'committed' "
@@ -118,6 +138,14 @@ def cmd_recover_index(args) -> None:
             s.ingest.enqueue(Path(tmp.name), sha, {"filename": f"{sha[:12]}"})
         n = s.ingest.run_pending(limit=len(rows) + 1)
         print(f"re-ingested {n} media files")
+    print("next: run `cloudstore scrub --full` to verify every shard")
+
+
+def cmd_snapshot(args) -> None:
+    from .storage.snapshots import take_snapshot
+
+    s = _svc()
+    print(take_snapshot(s.db, s.store))
 
 
 def cmd_seal(args) -> None:
@@ -160,8 +188,10 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("restripe").set_defaults(fn=cmd_restripe)
     ri = sub.add_parser("recover-index")
     ri.add_argument("--reingest", action="store_true")
+    ri.add_argument("--restore-metadata", action="store_true")
     ri.set_defaults(fn=cmd_recover_index)
     sub.add_parser("seal").set_defaults(fn=cmd_seal)
+    sub.add_parser("snapshot").set_defaults(fn=cmd_snapshot)
     sub.add_parser("status").set_defaults(fn=cmd_status)
     args = p.parse_args(argv)
     args.fn(args)

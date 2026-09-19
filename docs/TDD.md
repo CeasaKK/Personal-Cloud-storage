@@ -139,7 +139,7 @@ re-derives file metadata (EXIF, thumbnails, hashes) from the recovered originals
 1. Insert stripe row `state='pending'` (the journal entry), commit.
 2. For each shard: write `<disk>/tmp/<name>.part`, `fsync`, `rename` into place,
    `fsync` the directory.
-3. If ≥ `k + 1` shards landed (configurable `min_write_shards`), insert shard rows
+3. If ≥ `k + 1` shards landed (configurable via `CLOUDSTORE_MIN_WRITE_EXTRA`), insert shard rows
    (missing ones `state='missing'`, queued for repair) and flip the stripe to
    `committed` in one transaction. Otherwise delete what landed and fail the put.
 4. On startup, `pending` stripes older than the process start are garbage
@@ -361,6 +361,16 @@ maps to `BIGSERIAL`, `BLOB` to `BYTEA`, JSON text columns to `JSONB`; the
 `Database` class is the single seam where a psycopg connection pool would replace
 `sqlite3`.
 
+### 14.1 Metadata durability
+The SQLite file lives on a single SSD. Two layers protect it: (1) shard headers let
+`recover-index` rebuild the object/stripe/shard tables from the disks alone; (2) a daily
+**metadata snapshot** (SQLite online backup → zstd) is stored as an erasure-coded object
+`meta/snapshot-<ts>` on the data disks (last 7 kept), so albums, favourites, trash and
+sync manifests get the same any-two-disks durability as photos.
+`cloudstore recover-index --restore-metadata --reingest` restores the newest snapshot,
+re-indexes stripes written after it, and re-derives metadata for media newer than the
+snapshot (their original filenames are not recoverable; content, EXIF and dates are).
+
 ## 15. Gap resolutions (decisions made while expanding the brief)
 
 | # | Gap | Decision |
@@ -382,6 +392,10 @@ maps to `BIGSERIAL`, `BLOB` to `BYTEA`, JSON text columns to `JSONB`; the
 | 15 | Semantic search location | On-server (§13) |
 | 16 | Web auth for `<img>` | HttpOnly cookies; bearer for iOS (§11) |
 | 17 | Exposure | Bind localhost; `tailscale serve` HTTPS on the tailnet |
+| 18 | Single-SSD metadata | Daily erasure-coded metadata snapshots + index recovery from shard headers (§14.1) |
+| 19 | Near-duplicate index | MIH in production after measuring BK-tree pruning at r=10 (§9) |
+| 20 | Server-side deletes vs phone re-upload | Tombstone rows (`purged_at`) keep the hash known, so `reconcile` never asks for it again |
+| 21 | Web auth transport | HttpOnly SameSite=Strict cookies + `X-Requested-With` CSRF guard |
 
 ## 16. iOS client — `ios/`
 
@@ -405,16 +419,16 @@ maps to `BIGSERIAL`, `BLOB` to `BYTEA`, JSON text columns to `JSONB`; the
 
 ## 17. Build phases (as implemented)
 
-| Phase | Content |
-|---|---|
-| 1 | GF(2^8), Cauchy RS, backends incl. C SIMD, shard store, object store, scrub, rebuild, health, mirror/restripe, CLI |
-| 2 | DB schema, config, auth, tus, ingest pipeline (classify, EXIF, MP4 parser, thumbnails), files/albums/search/trash API |
-| 3 | Merkle sync server + shared vectors |
-| 4 | Non-media tier: Rabin CDC, Bloom filter, chunk index, seekable batch store, GC |
-| 5 | pHash/dHash, BK-tree, MIH, duplicate groups; quadtree map clusters; LRU thumb cache; dashboard |
-| 6 | Benchmark harnesses + results |
-| 7 | Web app |
-| 8 | iOS app + CloudSyncKit |
-| 9 | Deployment, docs, end-to-end verification |
+| Phase | Content | Status |
+|---|---|---|
+| 1 | GF(2^8), Cauchy RS, python/numpy/C-SIMD backends, shard store, object store, scrub, rebuild, health, mirror/restripe, index recovery | done — tests + failure drills |
+| 2 | DB schema, config, auth, tus, ingest pipeline (classify, EXIF, MP4 parser, thumbnails), files/albums/search/trash API | done |
+| 3 | Merkle sync server + shared cross-language vectors | done |
+| 4 | Non-media tier: Rabin CDC (C + Python), Bloom filter, chunk index, seekable dictionary-compressed batches, GC/compaction | done |
+| 5 | pHash/dHash, BK-tree, MIH, duplicate groups; quadtree map clusters; size-aware LRU; dashboard | done |
+| 6 | Benchmark harnesses + results (`docs/benchmarks.md`) | done |
+| 7 | Web app (React + Vite) | done — verified in browser against a seeded 6-disk instance |
+| 8 | iOS: CloudSyncKit (tested, incl. live e2e against the server) + SwiftUI app + share extension | done — app sources typechecked against iOS frameworks (Mac Catalyst SDK); on-device run requires Xcode + signing |
+| 9 | Deployment (install script, systemd, Tailscale), metadata snapshots, CI | done |
 
 **Minimum viable spine** (if time is short): phases 1, 2, 3, 5 (dedup part), 7, 8.
