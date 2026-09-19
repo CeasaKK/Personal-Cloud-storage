@@ -245,6 +245,10 @@ Default schedule: full pass every 30 days, continuous background progress.
      the phone leaves the device manifest, never the archive), and returns
      `need_upload` — the hashes the client must send via tus.
   Cost: O(changed buckets · (depth + bucket size)) instead of O(n) manifest.
+* **Bulk fallback:** each changed leaf costs three levels of 16 child hashes, so when the
+  difference is large relative to the library (first sync, or > 5 % changed) the client
+  skips the tree walk and sends its hash list straight to `reconcile`. The benchmark
+  shows the crossover (100 new items in a 1 k library is cheaper as a manifest).
 * Per-device state on the phone (Core Data) records each asset's hash and
   `synced` status, so a confirmed asset is never re-hashed or re-scanned.
 
@@ -263,10 +267,14 @@ Max upload size 64 GiB.
 * Fingerprints: **pHash** (32×32 grayscale → 2-D DCT → top-left 8×8 excluding DC
   → median threshold → 64 bits) is primary; **dHash** (9×8 gradient) is stored too.
   EXIF orientation is applied first.
-* Index: **BK-tree** under Hamming distance (in-memory, rebuilt at startup).
-  **Multi-index hashing** (4 × 16-bit substrings, pigeonhole: r ≤ 7 ⇒ some substring
-  within ⌊r/4⌋ ≤ 1) is implemented as the alternative and benchmarked; a numpy
-  vectorised popcount linear scan is the honest baseline.
+* Index: **multi-index hashing** (4 × 16-bit substrings; pigeonhole: d ≤ r ⇒ some
+  substring within ⌊r/4⌋) is the production index. The **BK-tree** (the brief's first
+  choice) is implemented and benchmarked alongside it, with a numpy vectorised-popcount
+  linear scan as the honest baseline. Measured result (docs/benchmarks.md §5b): at
+  r = 10 the BK-tree's triangle-inequality pruning still visits ~66 % of nodes (64-bit
+  codes of unrelated photos sit at distance ≈ 32 ± 4, so the pruning window [d−r, d+r]
+  covers most edges), while MIH answers in 0.4 ms at 100 k images vs 18 ms. The switch
+  is one env var (`CLOUDSTORE_DUP_INDEX=bktree`).
 * Grouping: new image → radius query (default r = 10 on pHash, tuned by the
   precision/recall benchmark) → union-find merge into `dup_groups`. Video frames
   are not fingerprinted in v1 (gap decision: burst shots are stills).

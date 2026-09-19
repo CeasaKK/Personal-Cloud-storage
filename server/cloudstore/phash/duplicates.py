@@ -1,30 +1,42 @@
 """Near-duplicate grouping (TDD §9).
 
-In-memory BK-tree over the pHash of every live image, rebuilt at startup.
+In-memory Hamming index over the pHash of every live image, rebuilt at startup.
 A new image queries radius r; every hit's group is union-merged with the new
 image's group (union-find by smallest file id as root), persisted in
 ``files.dup_group``.
+
+Index choice is data-driven (docs/benchmarks.md §5b): at r=10 on 64-bit codes a
+BK-tree's triangle-inequality pruning visits ~2/3 of all nodes, while multi-index
+hashing answers the same query ~50x faster at 100k images. MIH is the default;
+``CLOUDSTORE_DUP_INDEX=bktree`` selects the BK-tree.
 """
 
 from __future__ import annotations
 
+import os
 import threading
 
 from ..db.database import Database
 from .bktree import BKTree
 from .hashing import to_unsigned
+from .mih import MultiIndexHash
+
+
+def make_index(kind: str | None = None):
+    kind = kind or os.environ.get("CLOUDSTORE_DUP_INDEX", "mih")
+    return BKTree() if kind == "bktree" else MultiIndexHash()
 
 
 class DuplicateIndex:
     def __init__(self, db: Database, radius: int = 10) -> None:
         self.db = db
         self.radius = radius
-        self.tree = BKTree()
+        self.tree = make_index()
         self._lock = threading.Lock()
 
     def load(self) -> int:
         with self._lock:
-            self.tree = BKTree()
+            self.tree = make_index()
             rows = self.db.all("SELECT id, phash FROM files WHERE phash IS NOT NULL AND trashed_at IS NULL")
             for r in rows:
                 self.tree.add(to_unsigned(r["phash"]), r["id"])
